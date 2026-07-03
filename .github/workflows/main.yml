@@ -34,11 +34,22 @@ jobs:
         run: |
           mkdir -p unsigned
 
-          ditto -x -k --norsrc --noextattr dist/*unsigned*.zip unsigned
+          ditto -x -k dist/*unsigned*.zip unsigned
           rm -rf unsigned/__MACOSX
 
           find unsigned -name ".DS_Store" -delete
-          xattr -cr unsigned
+
+          APP_PATH="$(find unsigned -path "*/__MACOSX/*" -prune -o -name "*.app" -type d -print | head -n 1)"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app found"
+            exit 1
+          fi
+
+          echo "Found app: $APP_PATH"
+
+          # Clean bad metadata BEFORE signing only
+          xattr -cr "$APP_PATH"
 
           find unsigned -path "*/__MACOSX/*" -prune -o -name "*.app" -type d -print
 
@@ -78,7 +89,10 @@ jobs:
           echo "Signing app: $APP_PATH"
 
           find "$APP_PATH" -name ".DS_Store" -delete
-          xattr -cr "$APP_PATH"
+
+          # IMPORTANT:
+          # Do not run xattr -cr after this point.
+          # document.wflow signature may be stored in extended attributes.
 
           if [ -e "$APP_PATH/Contents/document.wflow" ]; then
             echo "Signing Automator workflow: $APP_PATH/Contents/document.wflow"
@@ -86,8 +100,12 @@ jobs:
             codesign --force --timestamp \
               --sign "$APPLE_SIGNING_IDENTITY" \
               "$APP_PATH/Contents/document.wflow"
+
+            codesign --verify --verbose=4 \
+              "$APP_PATH/Contents/document.wflow"
           fi
 
+          # Important for Automator apps: do NOT use --deep
           codesign --force --options runtime \
             --timestamp \
             --sign "$APPLE_SIGNING_IDENTITY" \
@@ -95,14 +113,15 @@ jobs:
 
           codesign --verify --strict --verbose=4 "$APP_PATH"
 
-          mkdir -p signed
-          ditto "$APP_PATH" "signed/$(basename "$APP_PATH")"
+          # Preserve extended attributes after signing.
+          # Do NOT use --norsrc or --noextattr here.
+          ditto -c -k --keepParent "$APP_PATH" signed-app.zip
 
-      - name: Upload signed app artifact
+      - name: Upload signed app zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: signed-macos-artifacts
-          path: signed/*.app
+          path: signed-app.zip
           if-no-files-found: error
 
   notarize-release:
@@ -114,14 +133,19 @@ jobs:
       contents: write
 
     steps:
-      - name: Download signed app
+      - name: Download signed app zip
         uses: actions/download-artifact@v4
         with:
           name: signed-macos-artifacts
-          path: artifacts
+          path: downloaded
 
-      - name: Prepare app for notarization
+      - name: Extract signed app
         run: |
+          mkdir -p artifacts
+
+          # Extract while preserving extended attributes.
+          ditto -x -k downloaded/signed-app.zip artifacts
+
           APP_PATH="$(find artifacts -path "*/__MACOSX/*" -prune -o -name "*.app" -type d -print | head -n 1)"
 
           if [ -z "$APP_PATH" ]; then
@@ -130,13 +154,29 @@ jobs:
           fi
 
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "Found signed app: $APP_PATH"
 
-          find "$APP_PATH" -name ".DS_Store" -delete
-          xattr -cr "$APP_PATH"
+          # Do NOT run xattr -cr here.
+          # It can remove the document.wflow signature.
 
           codesign --verify --strict --verbose=4 "$APP_PATH"
 
-          ditto -c -k --keepParent --norsrc --noextattr "$APP_PATH" app-notarize.zip
+          if [ -e "$APP_PATH/Contents/document.wflow" ]; then
+            codesign --verify --verbose=4 "$APP_PATH/Contents/document.wflow"
+          fi
+
+      - name: Prepare app for notarization
+        run: |
+          # Do NOT run xattr -cr here.
+          # Do NOT use --norsrc or --noextattr after signing.
+
+          codesign --verify --strict --verbose=4 "$APP_PATH"
+
+          if [ -e "$APP_PATH/Contents/document.wflow" ]; then
+            codesign --verify --verbose=4 "$APP_PATH/Contents/document.wflow"
+          fi
+
+          ditto -c -k --keepParent "$APP_PATH" app-notarize.zip
 
       - name: Notarize app
         env:
@@ -174,7 +214,9 @@ jobs:
 
       - name: Create final app zip
         run: |
-          ditto -c -k --keepParent --norsrc --noextattr "$APP_PATH" "Final-macOS.app.zip"
+          # Preserve notarization/stapling data.
+          # Do NOT use --norsrc or --noextattr here.
+          ditto -c -k --keepParent "$APP_PATH" "Final-macOS.app.zip"
 
       - name: Upload notarized app to GitHub Release
         uses: softprops/action-gh-release@v2
