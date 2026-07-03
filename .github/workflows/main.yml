@@ -80,7 +80,14 @@ jobs:
           find "$APP_PATH" -name ".DS_Store" -delete
           xattr -cr "$APP_PATH"
 
-          # Important for Automator apps: do NOT use --deep
+          if [ -e "$APP_PATH/Contents/document.wflow" ]; then
+            echo "Signing Automator workflow: $APP_PATH/Contents/document.wflow"
+
+            codesign --force --timestamp \
+              --sign "$APPLE_SIGNING_IDENTITY" \
+              "$APP_PATH/Contents/document.wflow"
+          fi
+
           codesign --force --options runtime \
             --timestamp \
             --sign "$APPLE_SIGNING_IDENTITY" \
