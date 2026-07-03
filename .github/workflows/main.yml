@@ -62,7 +62,9 @@ jobs:
             -S apple-tool:,apple:,codesign: \
             -s -k "" build.keychain
 
-      - name: Sign app
+          security find-identity -v -p codesigning
+
+      - name: Sign Automator app
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
@@ -78,12 +80,13 @@ jobs:
           find "$APP_PATH" -name ".DS_Store" -delete
           xattr -cr "$APP_PATH"
 
-          codesign --force --deep --options runtime \
+          # Important for Automator apps: do NOT use --deep
+          codesign --force --options runtime \
             --timestamp \
             --sign "$APPLE_SIGNING_IDENTITY" \
             "$APP_PATH"
 
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign --verify --strict --verbose=4 "$APP_PATH"
 
           mkdir -p signed
           ditto "$APP_PATH" "signed/$(basename "$APP_PATH")"
@@ -124,6 +127,8 @@ jobs:
           find "$APP_PATH" -name ".DS_Store" -delete
           xattr -cr "$APP_PATH"
 
+          codesign --verify --strict --verbose=4 "$APP_PATH"
+
           ditto -c -k --keepParent --norsrc --noextattr "$APP_PATH" app-notarize.zip
 
       - name: Notarize app
@@ -132,11 +137,30 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          set -e
+
           xcrun notarytool submit app-notarize.zip \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_PASSWORD" \
-            --wait
+            --wait \
+            --output-format json > notarization-result.json
+
+          cat notarization-result.json
+
+          STATUS="$(python3 -c 'import json; print(json.load(open("notarization-result.json"))["status"])')"
+          ID="$(python3 -c 'import json; print(json.load(open("notarization-result.json"))["id"])')"
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "Notarization failed. Fetching Apple log..."
+
+            xcrun notarytool log "$ID" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_PASSWORD"
+
+            exit 1
+          fi
 
           xcrun stapler staple "$APP_PATH"
           xcrun stapler validate "$APP_PATH"
