@@ -34,8 +34,11 @@ jobs:
         run: |
           mkdir -p unsigned
 
-          ditto -x -k dist/*unsigned*.zip unsigned
+          ditto -x -k --norsrc --noextattr dist/*unsigned*.zip unsigned
           rm -rf unsigned/__MACOSX
+
+          find unsigned -name ".DS_Store" -delete
+          xattr -cr unsigned
 
           find unsigned -path "*/__MACOSX/*" -prune -o -name "*.app" -type d -print
 
@@ -71,6 +74,9 @@ jobs:
           fi
 
           echo "Signing app: $APP_PATH"
+
+          find "$APP_PATH" -name ".DS_Store" -delete
+          xattr -cr "$APP_PATH"
 
           codesign --force --deep --options runtime \
             --timestamp \
@@ -114,6 +120,9 @@ jobs:
           fi
 
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+          find "$APP_PATH" -name ".DS_Store" -delete
+          xattr -cr "$APP_PATH"
 
           ditto -c -k --keepParent --norsrc --noextattr "$APP_PATH" app-notarize.zip
 
